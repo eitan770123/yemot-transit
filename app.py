@@ -15,6 +15,18 @@ COMMON_TA_LINES = {
     "189", "190", "193", "201", "274", "411", "461"
 }
 
+def clean_text(text: str) -> str:
+    """ניקוי תווים לא חוקיים של ימות המשיח כדי למנוע קריסה של השרת הטלפוני"""
+    if not text:
+        return ""
+    # החלפת נקודות בפסיק עם רווחים כדי לשמור על הפסקה יפה בהקראה
+    text = text.replace(".", " , ")
+    # הסרת מקפים, גרשיים ותווים מיוחדים אחרים שאינם חוקיים ב-TTS
+    text = re.sub(r'[-\-"\'&|]', "", text)
+    # צמצום רווחים כפולים
+    text = re.sub(r'\s+', " ", text)
+    return text.strip()
+
 def get_israel_time() -> datetime.datetime:
     """קבלת הזמן הנוכחי לפי שעון ישראל"""
     try:
@@ -69,18 +81,21 @@ def handle_ivr_request():
     # 1. תרחיש חיפוש לפי מזהה תחנה מותאם אישית
     # ==========================================
     if select == "4":
-        response_text = "read=t-נא הקש את מזהה התחנה בן חמש הספרות, ובסיום הקש סולמית=custom_stop,no,5,5,#,no"
+        raw_msg = "נא הקש את מזהה התחנה בן חמש הספרות, ובסיום הקש סולמית"
+        response_text = f"read=t-{clean_text(raw_msg)}=custom_stop,no,5,5,#,no"
         return Response(response_text, mimetype="text/plain; charset=utf-8")
 
     if custom_stop:
         try:
             data = israel_bus_cli.get_lines_by_stop(custom_stop)
         except Exception:
-            response_text = "read=t-אירעה שגיאה בחיפוש התחנה. אנא נסה שוב. לחזרה לתפריט הקש 9.=select,no,1,1,9,no"
+            raw_msg = "אירעה שגיאה בחיפוש התחנה. אנא נסה שוב. לחזרה לתפריט הקש 9."
+            response_text = f"read=t-{clean_text(raw_msg)}=select,no,1,1,9,no"
             return Response(response_text, mimetype="text/plain; charset=utf-8")
             
         if not data:
-            response_text = "read=t-לא נמצאו קווים פעילים בתחנה זו. לחזרה לתפריט הקש 9.=select,no,1,1,9,no"
+            raw_msg = "לא נמצאו קווים פעילים בתחנה זו. לחזרה לתפריט הקש 9."
+            response_text = f"read=t-{clean_text(raw_msg)}=select,no,1,1,9,no"
             return Response(response_text, mimetype="text/plain; charset=utf-8")
             
         # סינון קווים שמגיעים לתל אביב
@@ -92,7 +107,8 @@ def handle_ivr_request():
                 ta_arrivals.append(item)
                 
         if not ta_arrivals:
-            response_text = "read=t-לא נמצאו קווים ישירים לתל אביב בתחנה זו. לחזרה לתפריט הקש 9.=select,no,1,1,9,no"
+            raw_msg = "לא נמצאו קווים ישירים לתל אביב בתחנה זו. לחזרה לתפריט הקש 9."
+            response_text = f"read=t-{clean_text(raw_msg)}=select,no,1,1,9,no"
             return Response(response_text, mimetype="text/plain; charset=utf-8")
             
         # בניית תפריט קווים זמינים (עד 3)
@@ -111,10 +127,11 @@ def handle_ivr_request():
         lines_joined = ",".join(lines_list)
         legal_digits = "".join(str(i + 1) for i in range(len(lines_list))) + "9"
         
+        raw_msg = f"בתחנה זו. {menu_text} לחזרה לתפריט הראשי הקש 9."
         response_text = (
             f"api_set_phone_var_search_stop={custom_stop}&"
             f"api_set_phone_var_search_lines={lines_joined}&"
-            f"read=t-בתחנה זו. {menu_text} לחזרה לתפריט הראשי הקש 9.=custom_stop_selection,no,1,1,{legal_digits},no"
+            f"read=t-{clean_text(raw_msg)}=custom_stop_selection,no,1,1,{legal_digits},no"
         )
         return Response(response_text, mimetype="text/plain; charset=utf-8")
 
@@ -139,7 +156,8 @@ def handle_ivr_request():
                 eta_text = f"מגיע בעוד {eta} דקות" if eta is not None else "לא נמצאו זמנים קרובים כעת"
                 eta_time = f" שעת הגעה לתחנה משוערת היא {get_eta_time_string(eta)}." if eta is not None else ""
                 
-                response_text = f"read=t-קו {selected_line} מתחנה {search_stop} {eta_text}.{eta_time} לנסיעה חדשה הקש 9.=select,no,1,1,9,no"
+                raw_msg = f"קו {selected_line} מתחנה {search_stop} {eta_text}.{eta_time} לנסיעה חדשה הקש 9."
+                response_text = f"read=t-{clean_text(raw_msg)}=select,no,1,1,9,no"
                 return Response(response_text, mimetype="text/plain; charset=utf-8")
         except Exception:
             return Response("routing=./", mimetype="text/plain; charset=utf-8")
@@ -152,10 +170,12 @@ def handle_ivr_request():
     try:
         data = israel_bus_cli.get_lines_by_stop("33440")
     except Exception as e:
-        return Response(f"id_list_message=t-שגיאה בקבלת נתונים ממשרד התחבורה. {str(e)}", mimetype="text/plain; charset=utf-8")
+        err_msg = f"שגיאה בקבלת נתונים ממשרד התחבורה. {str(e)}"
+        return Response(f"id_list_message=t-{clean_text(err_msg)}", mimetype="text/plain; charset=utf-8")
 
     if not data:
-        return Response("id_list_message=t-לא נמצאו קווים פעילים בתחנה זו כעת.", mimetype="text/plain; charset=utf-8")
+        err_msg = "לא נמצאו קווים פעילים בתחנה זו כעת."
+        return Response(f"id_list_message=t-{clean_text(err_msg)}", mimetype="text/plain; charset=utf-8")
 
     # סינון רק לקווים המאושרים לתל אביב
     my_arrivals = []
@@ -165,7 +185,8 @@ def handle_ivr_request():
             my_arrivals.append(item)
 
     if not my_arrivals:
-        return Response("id_list_message=t-סליחה. לא נמצאו אוטובוסים קרובים לתל אביב כעת בתחנה.", mimetype="text/plain; charset=utf-8")
+        err_msg = "סליחה. לא נמצאו אוטובוסים קרובים לתל אביב כעת בתחנה."
+        return Response(f"id_list_message=t-{clean_text(err_msg)}", mimetype="text/plain; charset=utf-8")
 
     # מיון לפי זמן הגעה קרוב
     my_arrivals = sorted(my_arrivals, key=lambda x: x.get('MinutesToArrival', 999))
@@ -191,7 +212,7 @@ def handle_ivr_request():
                 
                 response_text = (
                     f"api_set_phone_var_saved_route={line}&"
-                    f"read=t-{msg}=select,no,1,1,89,no"
+                    f"read=t-{clean_text(msg)}=select,no,1,1,89,no"
                 )
                 return Response(response_text, mimetype="text/plain; charset=utf-8")
         except Exception:
@@ -202,7 +223,7 @@ def handle_ivr_request():
         line_to_use = saved_route if saved_route in APPROVED_LINES else "74"
         _, walk_instructions = get_walking_instructions(line_to_use)
         
-        response_text = f"read=t-{walk_instructions} לחזרה לתפריט הראשי הקש 9.=select,no,1,1,9,no"
+        response_text = f"read=t-{clean_text(walk_instructions)} לחזרה לתפריט הראשי הקש 9.=select,no,1,1,9,no"
         return Response(response_text, mimetype="text/plain; charset=utf-8")
 
     # ג. תרחיש של מסלול שמור (הוקש 0)
@@ -222,11 +243,11 @@ def handle_ivr_request():
                 f"המסלול השמור שלך הוא קו {saved_route}. האוטובוס מגיע בעוד {eta} דקות, "
                 f"בשעה {eta_time}. לרשימת המסלולים המלאה הקש 9."
             )
-            response_text = f"read=t-{msg}=select,no,1,1,9,no"
+            response_text = f"read=t-{clean_text(msg)}=select,no,1,1,9,no"
             return Response(response_text, mimetype="text/plain; charset=utf-8")
         else:
             msg = f"הקו השמור שלך הוא קו {saved_route}, אך לא נמצאה נסיעה קרובה שלו. לרשימת המסלולים המלאה הקש 9."
-            response_text = f"read=t-{msg}=select,no,1,1,9,no"
+            response_text = f"read=t-{clean_text(msg)}=select,no,1,1,9,no"
             return Response(response_text, mimetype="text/plain; charset=utf-8")
 
     # ד. תפריט ראשי
@@ -251,7 +272,7 @@ def handle_ivr_request():
         allowed_keys.append("0")
     legal_digits = "".join(allowed_keys)
     
-    response_text = f"read=t-שלום. {menu_text}=select,no,1,1,{legal_digits},no"
+    response_text = f"read=t-{clean_text('שלום. ' + menu_text)}=select,no,1,1,{legal_digits},no"
     return Response(response_text, mimetype="text/plain; charset=utf-8")
 
 if __name__ == "__main__":
