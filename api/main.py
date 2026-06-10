@@ -16,24 +16,35 @@ def clean_text(text: str) -> str:
     text = re.sub(r'\s+', " ", text)
     return text.strip()
 
-def make_ivr_response(text: str, var_name: str, min_digits: int = 1, max_digits: int = 1, sec_wait: int = 7) -> str:
-    """ייצור תגובת IVR עם פקודת read ישירה"""
-    cleaned_text = clean_text(text)
-    return f"read=t-{cleaned_text}={var_name},yes,{max_digits},{min_digits},{sec_wait},No,no,no"
+import json
 
-app = FastAPI(title="Yemot Hamashiach Transit IVR (Free Version)")
+SAVED_ROUTES_FILE = "saved_routes.json"
 
-# קווים ישירים מצומת בית דגן המגיעים סמוך מאוד לשדרות רוטשילד / נחלת בנימין
-APPROVED_LINES = {"74", "174", "201", "274", "156"}
+def load_saved_routes():
+    if os.path.exists(SAVED_ROUTES_FILE):
+        try:
+            with open(SAVED_ROUTES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
 
-# קווים כלליים לתל אביב לצורך סינון בחיפוש מתחנות אחרות
-COMMON_TA_LINES = {
-    "1", "2", "25", "74", "125", "129", "142", "156", "164", "172", "174", 
-    "189", "190", "193", "201", "274", "411", "461"
-}
+def save_saved_routes(routes):
+    try:
+        with open(SAVED_ROUTES_FILE, "w", encoding="utf-8") as f:
+            json.dump(routes, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+saved_routes = load_saved_routes()
+active_sessions = {}
+
+def make_ivr_response(text: str, var_name: str = "", min_digits: int = 1, max_digits: int = 1, sec_wait: int = 7) -> str:
+    """ייצור תגובת IVR המבוססת על טקסט נקי בלבד"""
+    return clean_text(text)
 
 def get_israel_time() -> datetime.datetime:
-    """קבלת הזמן הנוכחי לפי שעון ישראל (התמודדות עם שרתי ענן)"""
+    """קבלת הזמן הנוכחי לפי שעון ישראל"""
     try:
         from zoneinfo import ZoneInfo
         return datetime.datetime.now(ZoneInfo("Asia/Jerusalem"))
@@ -71,38 +82,105 @@ def get_walking_instructions(line: str) -> tuple[str, str]:
         )
     return station, walk
 
+def get_main_menu_response(phone: str, saved_route: str) -> str:
+    try:
+        data = israel_bus_cli.get_lines_by_stop("33440")
+    except Exception:
+        return clean_text("שגיאה בקבלת נתונים ממשרד התחבורה לחזרה לתפריט הקש 9")
+        
+    if not data:
+        return clean_text("לא נמצאו קווים פעילים בתחנה זו כעת לחזרה לתפריט הקש 9")
+        
+    my_arrivals = []
+    for item in data:
+        shilut = str(item.get('Shilut', ''))
+        if shilut in APPROVED_LINES:
+            my_arrivals.append(item)
+            
+    if not my_arrivals:
+        return clean_text("סליחה לא נמצאו אוטובוסים קרובים לתל אביב כעת בתחנה לחזרה לתפריט הקש 9")
+        
+    my_arrivals = sorted(my_arrivals, key=lambda x: x.get('MinutesToArrival', 999))
+    
+    menu_parts = []
+    if saved_route:
+        menu_parts.append(f"לשמיעת המסלול השמור שלך, קו {saved_route}, הקש 0.")
+        
+    for i, item in enumerate(my_arrivals[:3]):
+        shilut = str(item.get('Shilut', ''))
+        eta = item.get('MinutesToArrival', 0)
+        num_word = ["ראשון", "שני", "שלישי"]
+        num_str = num_word[i] if i < len(num_word) else str(i + 1)
+        menu_parts.append(f"למסלול {num_str} עם קו {shilut} מגיע בעוד {eta} דקות, הקש {i + 1}.")
+        
+    menu_parts.append("להזנת מזהה תחנה אחרת הקש 4.")
+    menu_text = " ".join(menu_parts)
+    return clean_text(f"שלום {menu_text}")
+
 @app.get("/")
 @app.get("/transit-route")
 def handle_ivr_request(
-    select: str = Query(None),       # הוחלף מ-selection כדי למנוע התנגשויות
-    saved_route: str = Query(None),  # משתנה שישמר בימות המשיח
-    custom_stop: str = Query(None),  # חיפוש לפי מזהה תחנה
-    custom_stop_selection: str = Query(None),
-    search_stop: str = Query(None),  # פרמטרים שמורים לצורך תהליך החיפוש
-    search_lines: str = Query(None),
-    ApiCallId: str = Query(None)
+    select: str = Query(None),
+    ApiPhone: str = Query(None),
+    phone: str = Query(None)
 ):
-    # ==========================================
-    # 1. תרחיש חיפוש לפי מזהה תחנה מותאם אישית
-    # ==========================================
-    if select == "4":  # שונה מ-* למקש 4
-        # בקשה מהמשתמש להזין מזהה תחנה
-        return PlainTextResponse(
-            make_ivr_response("נא הקש את מזהה התחנה בן חמש הספרות", "custom_stop", min_digits=5, max_digits=5, sec_wait=10)
-        )
-
-    if custom_stop:
+    caller_phone = ApiPhone or phone or "default"
+    if select:
+        select = select.strip()
+        
+    session = active_sessions.setdefault(caller_phone, {})
+    saved_route = saved_routes.get(caller_phone)
+    
+    # 1. חזרה לתפריט הראשי או כניסה ראשונית ללא בחירה
+    if not select or select == "9":
+        session.clear()
+        return PlainTextResponse(get_main_menu_response(caller_phone, saved_route))
+        
+    # 2. תפריט שמור - הקשת 0
+    if select == "0" and saved_route:
+        try:
+            data = israel_bus_cli.get_lines_by_stop("33440")
+        except Exception:
+            return PlainTextResponse(clean_text("שגיאה בקבלת נתונים ממשרד התחבורה לחזרה לתפריט הקש 9"))
+            
+        if not data:
+            return PlainTextResponse(clean_text("לא נמצאו קווים פעילים בתחנה זו כעת לחזרה לתפריט הקש 9"))
+            
+        saved_arrival = None
+        for item in data:
+            if str(item.get('Shilut', '')) == saved_route:
+                saved_arrival = item
+                break
+                
+        if saved_arrival:
+            eta = saved_arrival.get('MinutesToArrival', 0)
+            eta_time = get_eta_time_string(eta)
+            drop_station, _ = get_walking_instructions(saved_route)
+            
+            msg = (
+                f"המסלול השמור שלך הוא קו {saved_route}. האוטובוס מגיע בעוד {eta} דקות, "
+                f"בשעה {eta_time}. לרשימת המסלולים המלאה הקש 9."
+            )
+            return PlainTextResponse(clean_text(msg))
+        else:
+            msg = f"הקו השמור שלך הוא קו {saved_route}, אך לא נמצאה נסיעה קרובה שלו. לרשימת המסלולים המלאה הקש 9."
+            return PlainTextResponse(clean_text(msg))
+            
+    # 3. מעבר למסלול מותאם אישית - הקשת 4
+    if select == "4":
+        session.clear()
+        return PlainTextResponse(clean_text("נא הקש את מזהה התחנה בן חמש הספרות"))
+        
+    # 4. הזנת תחנה מותאמת אישית (5 ספרות)
+    if len(select) == 5 and select.isdigit():
+        custom_stop = select
         try:
             data = israel_bus_cli.get_lines_by_stop(custom_stop)
         except Exception:
-            return PlainTextResponse(
-                make_ivr_response("אירעה שגיאה בחיפוש התחנה אנא נסה שוב לחזרה לתפריט הקש 9", "select")
-            )
+            return PlainTextResponse(clean_text("אירעה שגיאה בחיפוש התחנה אנא נסה שוב לחזרה לתפריט הקש 9"))
             
         if not data:
-            return PlainTextResponse(
-                make_ivr_response("לא נמצאו קווים פעילים בתחנה זו לחזרה לתפריט הקש 9", "select")
-            )
+            return PlainTextResponse(clean_text("לא נמצאו קווים פעילים בתחנה זו לחזרה לתפריט הקש 9"))
             
         # סינון קווים שמגיעים לתל אביב
         ta_arrivals = []
@@ -113,9 +191,7 @@ def handle_ivr_request(
                 ta_arrivals.append(item)
                 
         if not ta_arrivals:
-            return PlainTextResponse(
-                make_ivr_response("לא נמצאו קווים ישירים לתל אביב בתחנה זו לחזרה לתפריט הקש 9", "select")
-            )
+            return PlainTextResponse(clean_text("לא נמצאו קווים ישירים לתל אביב בתחנה זו לחזרה לתפריט הקש 9"))
             
         # בניית תפריט קווים זמינים (עד 3)
         menu_parts = []
@@ -130,154 +206,96 @@ def handle_ivr_request(
             menu_parts.append(f"לקו {shilut} מגיע בעוד {eta} דקות, הקש {i + 1}.")
             
         menu_text = " ".join(menu_parts)
-        lines_joined = ",".join(lines_list)
-        legal_digits = "".join(str(i + 1) for i in range(len(lines_list))) + "9"
         
-        # שמירת פרטי החיפוש במשתנים זמניים בימות המשיח לצורך הצעד הבא
-        return PlainTextResponse(
-            f"api_set_phone_var_search_stop={custom_stop}&"
-            f"api_set_phone_var_search_lines={lines_joined}&"
-            f"{make_ivr_response('בתחנה זו ' + menu_text + ' לחזרה לתפריט הראשי הקש 9', 'custom_stop_selection')}"
-        )
-
-    if custom_stop_selection:
-        if custom_stop_selection == "9":
-            return PlainTextResponse("routing=./")
-            
-        try:
-            line_idx = int(custom_stop_selection) - 1
-            available_lines = search_lines.split(",")
-            if 0 <= line_idx < len(available_lines):
-                selected_line = available_lines[line_idx]
-                
-                # תשאול מחדש לקבלת זמן אמת מדויק לקו שנבחר
-                data = israel_bus_cli.get_lines_by_stop(search_stop)
-                eta = None
-                for item in data:
-                    if str(item.get('Shilut', '')) == selected_line:
-                        eta = item.get('MinutesToArrival', 0)
-                        break
-                
-                eta_text = f"מגיע בעוד {eta} דקות" if eta is not None else "לא נמצאו זמנים קרובים כעת"
-                eta_time = f" שעת הגעה לתחנה משוערת היא {get_eta_time_string(eta)}." if eta is not None else ""
-                
-                # השמעת התוצאה למשתמש
-                return PlainTextResponse(
-                    make_ivr_response(f"קו {selected_line} מתחנה {search_stop} {eta_text} {eta_time} לנסיעה חדשה הקש 9", "select")
-                )
-        except Exception:
-            return PlainTextResponse("routing=./")
-
-    # ==========================================
-    # 2. מסלול קבוע (בית דגן -> רוטשילד)
-    # ==========================================
-    
-    # שליפת נתונים לתחנה 33440
-    try:
-        data = israel_bus_cli.get_lines_by_stop("33440")
-    except Exception as e:
-        return PlainTextResponse(make_ivr_response("שגיאה בקבלת נתונים ממשרד התחבורה לחזרה לתפריט הקש 9", "select"))
-
-    if not data:
-        return PlainTextResponse(make_ivr_response("לא נמצאו קווים פעילים בתחנה זו כעת לחזרה לתפריט הקש 9", "select"))
-
-    # סינון רק לקווים המאושרים לתל אביב
-    my_arrivals = []
-    for item in data:
-        shilut = str(item.get('Shilut', ''))
-        if shilut in APPROVED_LINES:
-            my_arrivals.append(item)
-
-    if not my_arrivals:
-        return PlainTextResponse(make_ivr_response("סליחה לא נמצאו אוטובוסים קרובים לתל אביב כעת בתחנה לחזרה לתפריט הקש 9", "select"))
-
-    # מיון לפי זמן הגעה קרוב
-    my_arrivals = sorted(my_arrivals, key=lambda x: x.get('MinutesToArrival', 999))
-
-    # א. תרחיש שנבחר קו ספציפי (1, 2 או 3)
-    if select in {"1", "2", "3"}:
-        try:
-            idx = int(select) - 1
-            if idx < len(my_arrivals):
-                selected = my_arrivals[idx]
-                line = str(selected.get('Shilut', ''))
-                eta = selected.get('MinutesToArrival', 0)
-                eta_time = get_eta_time_string(eta)
-                
-                drop_station, walk_instructions = get_walking_instructions(line)
-                
-                msg = (
-                    f"בחרת בקו {line}. האוטובוס הבא מגיע לתחנה בעוד {eta} דקות, בשעה {eta_time}. "
-                    f"עליך לרדת בתחנת {drop_station}. זמן הנסיעה באוטובוס הוא כעשרים וחמש דקות. "
-                    f"לשמיעת הוראות הליכה מפורטות אל שדרות רוטשילד פינת נחלת בנימין הקש 8. "
-                    f"לחזרה לתפריט הקש 9."
-                )
-                
-                # שמירת המסלול בטלפון של המשתמש + השמעת הפרטים + המתנה למקש 8 או 9
-                return PlainTextResponse(
-                    f"api_set_phone_var_saved_route={line}&"
-                    f"{make_ivr_response(msg, 'select')}"
-                )
-        except Exception:
-            return PlainTextResponse("routing=./")
-
-    # ב. תרחיש של שמיעת הוראות הליכה ברגל (מקש 8)
+        # שמירה ב-Session
+        session["search_stop"] = custom_stop
+        session["search_lines"] = lines_list
+        
+        raw_msg = f"בתחנה זו. {menu_text} לחזרה לתפריט הראשי הקש 9."
+        return PlainTextResponse(clean_text(raw_msg))
+        
+    # 5. השמעת הוראות הליכה - הקשת 8
     if select == "8":
-        # כאן אנחנו צריכים לדעת איזה קו נשמר כדי להקריא את הוראות ההליכה הנכונות
-        line_to_use = saved_route if saved_route in APPROVED_LINES else "74"
+        line_to_use = session.get("selected_route") or saved_route or "74"
         _, walk_instructions = get_walking_instructions(line_to_use)
+        return PlainTextResponse(clean_text(f"{walk_instructions} לחזרה לתפריט הראשי הקש 9"))
         
-        return PlainTextResponse(
-            make_ivr_response(f"{walk_instructions} לחזרה לתפריט הראשי הקש 9", "select")
-        )
-
-    # ג. תרחיש של מסלול שמור (הוקש 0)
-    if select == "0" and saved_route:
-        # מחפשים מתי מגיע הקו השמור שלו
-        saved_arrival = None
-        for item in my_arrivals:
-            if str(item.get('Shilut', '')) == saved_route:
-                saved_arrival = item
-                break
-                
-        if saved_arrival:
-            eta = saved_arrival.get('MinutesToArrival', 0)
-            eta_time = get_eta_time_string(eta)
-            drop_station, _ = get_walking_instructions(saved_route)
+    # 6. בחירות קווים (מקשים 1, 2, 3)
+    if select in {"1", "2", "3"}:
+        search_stop = session.get("search_stop")
+        search_lines = session.get("search_lines", [])
+        
+        # א. אם אנו בתוך תפריט חיפוש תחנה
+        if search_stop:
+            try:
+                line_idx = int(select) - 1
+                if 0 <= line_idx < len(search_lines):
+                    selected_line = search_lines[line_idx]
+                    
+                    data = israel_bus_cli.get_lines_by_stop(search_stop)
+                    eta = None
+                    for item in data:
+                        if str(item.get('Shilut', '')) == selected_line:
+                            eta = item.get('MinutesToArrival', 0)
+                            break
+                            
+                    eta_text = f"מגיע בעוד {eta} דקות" if eta is not None else "לא נמצאו זמנים קרובים כעת"
+                    eta_time = f" שעת הגעה לתחנה משוערת היא {get_eta_time_string(eta)}." if eta is not None else ""
+                    
+                    raw_msg = f"קו {selected_line} מתחנה {search_stop} {eta_text} {eta_time} לנסיעה חדשה הקש 9"
+                    return PlainTextResponse(clean_text(raw_msg))
+            except Exception:
+                pass
+            session.clear()
+            return PlainTextResponse(get_main_menu_response(caller_phone, saved_route))
             
-            msg = (
-                f"המסלול השמור שלך הוא קו {saved_route}. האוטובוס מגיע בעוד {eta} דקות, "
-                f"בשעה {eta_time}. לרשימת המסלולים המלאה הקש 9."
-            )
-            return PlainTextResponse(make_ivr_response(msg, "select"))
+        # ב. אם אנו בתפריט הראשי (בית דגן)
         else:
-            msg = f"הקו השמור שלך הוא קו {saved_route}, אך לא נמצאה נסיעה קרובה שלו. לרשימת המסלולים המלאה הקש 9."
-            return PlainTextResponse(make_ivr_response(msg, "select"))
-
-    # ד. תפריט ראשי (כניסה ראשונית או חזרה עם מקש 9)
-    menu_parts = []
-    
-    # אם יש מסלול שמור, נציע אותו קודם
-    if saved_route:
-        menu_parts.append(f"לשמיעת המסלול השמור שלך, קו {saved_route}, הקש 0.")
-
-    # הוספת 2-3 האפשרויות הקרובות ביותר
-    for i, item in enumerate(my_arrivals[:3]):
-        shilut = str(item.get('Shilut', ''))
-        eta = item.get('MinutesToArrival', 0)
-        num_word = ["ראשון", "שני", "שלישי"]
-        num_str = num_word[i] if i < len(num_word) else str(i + 1)
-        menu_parts.append(f"למסלול {num_str} עם קו {shilut} מגיע בעוד {eta} דקות, הקש {i + 1}.")
-        
-    menu_parts.append("להזנת מזהה תחנה אחרת הקש 4.") # שונה מכוכבית למקש 4
-    
-    menu_text = " ".join(menu_parts)
-    
-    # בניית המקשים המותרים להקשה
-    allowed_keys = ["1", "2", "3", "4"] # שונה מ-* למקש 4
-    if saved_route:
-        allowed_keys.append("0")
-    legal_digits = "".join(allowed_keys)
-    
-    response_text = make_ivr_response(f"שלום {menu_text}", "select")
-    return PlainTextResponse(response_text)
+            try:
+                data = israel_bus_cli.get_lines_by_stop("33440")
+            except Exception:
+                return PlainTextResponse(clean_text("שגיאה בקבלת נתונים ממשרד התחבורה לחזרה לתפריט הקש 9"))
+                
+            if not data:
+                return PlainTextResponse(clean_text("לא נמצאו קווים פעילים בתחנה זו כעת לחזרה לתפריט הקש 9"))
+                
+            my_arrivals = []
+            for item in data:
+                shilut = str(item.get('Shilut', ''))
+                if shilut in APPROVED_LINES:
+                    my_arrivals.append(item)
+                    
+            my_arrivals = sorted(my_arrivals, key=lambda x: x.get('MinutesToArrival', 999))
+            
+            try:
+                idx = int(select) - 1
+                if idx < len(my_arrivals):
+                    selected = my_arrivals[idx]
+                    line = str(selected.get('Shilut', ''))
+                    eta = selected.get('MinutesToArrival', 0)
+                    eta_time = get_eta_time_string(eta)
+                    
+                    drop_station, walk_instructions = get_walking_instructions(line)
+                    
+                    # שמירה לצמיתות
+                    saved_routes[caller_phone] = line
+                    save_saved_routes(saved_routes)
+                    
+                    # שמירה זמנית ב-Session
+                    session["selected_route"] = line
+                    
+                    msg = (
+                        f"בחרת בקו {line}. האוטובוס הבא מגיע לתחנה בעוד {eta} דקות, בשעה {eta_time}. "
+                        f"עליך לרדת בתחנת {drop_station}. זמן הנסיעה באוטובוס הוא כעשרים וחמש דקות. "
+                        f"לשמיעת הוראות הליכה מפורטות אל שדרות רוטשילד פינת נחלת בנימין הקש 8. "
+                        f"לחזרה לתפריט הקש 9."
+                    )
+                    return PlainTextResponse(clean_text(msg))
+            except Exception:
+                pass
+            session.clear()
+            return PlainTextResponse(get_main_menu_response(caller_phone, saved_route))
+            
+    # כל מקרה אחר - חזרה לתפריט ראשי
+    session.clear()
+    return PlainTextResponse(get_main_menu_response(caller_phone, saved_route))
