@@ -1,5 +1,4 @@
-fastapi
-uvicorn
+flask
 requests
-python-dotenv
+gunicorn
 israel-bus-cli
