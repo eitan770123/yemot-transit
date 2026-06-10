@@ -5,13 +5,15 @@ from fastapi.responses import PlainTextResponse, JSONResponse
 import israel_bus_cli
 import re
 
+app = FastAPI()
+
 def clean_text(text: str) -> str:
     """ניקוי תווים לא חוקיים של ימות המשיח כדי למנוע קריסה של השרת הטלפוני"""
     if not text:
         return ""
-    # הסרה מוחלטת של: נקודה, מקף, גרש, גרשיים, אמפרסנד, פסיק וקו אנכי
+    # הסרה מוחלטת של: נקודה, מקף, גרש, גרשיים, אמפרסנד, פסיק, קו אנכי, נקודתיים ונקודה-פסיק
     # כולל סימני כיווניות של יוניקוד (LTR/RTL) שעלולים להשתרבב בטקסט
-    text = re.sub(r'[.\-\"\'&|,\u200e\u200f]', " ", text)
+    text = re.sub(r'[.\-\"\'\&|,:;\u200e\u200f]', " ", text)
     # צמצום רווחים כפולים
     text = re.sub(r'\s+', " ", text)
     return text.strip()
@@ -40,9 +42,16 @@ saved_routes = load_saved_routes()
 active_sessions = {}
 
 def make_ivr_response(text: str, var_name: str = "select", min_digits: int = 1, max_digits: int = 1, sec_wait: int = 7) -> str:
-    """ייצור תגובת IVR עם פקודת read ישירה"""
+    """ייצור תגובת IVR עם פקודת read ישירה
+    
+    פורמט read לפי תיעוד ימות המשיח:
+    read=<הודעה>=<שם_פרמטר>,<שימוש_קיים>,<מקסימום>,<מינימום>,<המתנה>,<סוג_השמעה>,<חסימת_כוכבית>,<חסימת_אפס>,<החלפה>
+    
+    חלק ראשון (הודעה): t-טקסט להקראה
+    חלק שני (נתון): שם הפרמטר, ברירת מחדל, מקסימום ספרות, מינימום ספרות, שניות המתנה, סוג השמעה
+    """
     cleaned_text = clean_text(text)
-    return f"read=t-{cleaned_text}={var_name},yes,{max_digits},{min_digits},{sec_wait},No,no,no"
+    return f"read=t-{cleaned_text}={var_name},,{max_digits},{min_digits},{sec_wait},NO"
 
 def get_israel_time() -> datetime.datetime:
     """קבלת הזמן הנוכחי לפי שעון ישראל"""
