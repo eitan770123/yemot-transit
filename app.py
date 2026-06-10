@@ -27,9 +27,9 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 def make_ivr_response(text: str, var_name: str, min_digits: int = 1, max_digits: int = 1, sec_wait: int = 7) -> str:
-    """ייצור תגובת IVR המפרידה בין הקראת ההודעה לקבלת הקלט בשיטה הבטוחה ביותר"""
+    """ייצור תגובת IVR עם פקודת read ישירה"""
     cleaned_text = clean_text(text)
-    return f"id_list_message=t-{cleaned_text}&read=t- ={var_name},yes,{max_digits},{min_digits},{sec_wait},No,no,no"
+    return f"read=t-{cleaned_text}={var_name},yes,{max_digits},{min_digits},{sec_wait},No,no,no"
 
 def get_israel_time() -> datetime.datetime:
     """קבלת הזמן הנוכחי לפי שעון ישראל"""
@@ -173,12 +173,14 @@ def handle_ivr_request():
     try:
         data = israel_bus_cli.get_lines_by_stop("33440")
     except Exception as e:
-        err_msg = f"שגיאה בקבלת נתונים ממשרד התחבורה {str(e)}"
-        return Response(f"id_list_message=t-{clean_text(err_msg)}&", mimetype="text/plain; charset=utf-8")
+        err_msg = "שגיאה בקבלת נתונים ממשרד התחבורה לחזרה לתפריט הקש 9"
+        response_text = make_ivr_response(err_msg, "select")
+        return Response(response_text, mimetype="text/plain; charset=utf-8")
 
     if not data:
-        err_msg = "לא נמצאו קווים פעילים בתחנה זו כעת"
-        return Response(f"id_list_message=t-{clean_text(err_msg)}&", mimetype="text/plain; charset=utf-8")
+        err_msg = "לא נמצאו קווים פעילים בתחנה זו כעת לחזרה לתפריט הקש 9"
+        response_text = make_ivr_response(err_msg, "select")
+        return Response(response_text, mimetype="text/plain; charset=utf-8")
 
     # סינון רק לקווים המאושרים לתל אביב
     my_arrivals = []
@@ -188,8 +190,9 @@ def handle_ivr_request():
             my_arrivals.append(item)
 
     if not my_arrivals:
-        err_msg = "סליחה לא נמצאו אוטובוסים קרובים לתל אביב כעת בתחנה"
-        return Response(f"id_list_message=t-{clean_text(err_msg)}&", mimetype="text/plain; charset=utf-8")
+        err_msg = "סליחה לא נמצאו אוטובוסים קרובים לתל אביב כעת בתחנה לחזרה לתפריט הקש 9"
+        response_text = make_ivr_response(err_msg, "select")
+        return Response(response_text, mimetype="text/plain; charset=utf-8")
 
     # מיון לפי זמן הגעה קרוב
     my_arrivals = sorted(my_arrivals, key=lambda x: x.get('MinutesToArrival', 999))
