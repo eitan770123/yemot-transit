@@ -57,7 +57,7 @@ def get_walking_instructions(line: str) -> tuple[str, str]:
 @app.get("/")
 @app.get("/transit-route")
 def handle_ivr_request(
-    selection: str = Query(None),
+    select: str = Query(None),       # הוחלף מ-selection כדי למנוע התנגשויות
     saved_route: str = Query(None),  # משתנה שישמר בימות המשיח
     custom_stop: str = Query(None),  # חיפוש לפי מזהה תחנה
     custom_stop_selection: str = Query(None),
@@ -68,7 +68,7 @@ def handle_ivr_request(
     # ==========================================
     # 1. תרחיש חיפוש לפי מזהה תחנה מותאם אישית
     # ==========================================
-    if selection == "*":
+    if select == "4":  # שונה מ-* למקש 4
         # בקשה מהמשתמש להזין מזהה תחנה
         return PlainTextResponse(
             "read=t-נא הקש את מזהה התחנה בן חמש הספרות, ובסיום הקש סולמית=custom_stop,no,5,5,#,no"
@@ -79,12 +79,12 @@ def handle_ivr_request(
             data = israel_bus_cli.get_lines_by_stop(custom_stop)
         except Exception:
             return PlainTextResponse(
-                "read=t-אירעה שגיאה בחיפוש התחנה. אנא נסה שוב. לחזרה לתפריט הקש 9.=selection,no,1,1,9,no"
+                "read=t-אירעה שגיאה בחיפוש התחנה. אנא נסה שוב. לחזרה לתפריט הקש 9.=select,no,1,1,9,no"
             )
             
         if not data:
             return PlainTextResponse(
-                "read=t-לא נמצאו קווים פעילים בתחנה זו. לחזרה לתפריט הקש 9.=selection,no,1,1,9,no"
+                "read=t-לא נמצאו קווים פעילים בתחנה זו. לחזרה לתפריט הקש 9.=select,no,1,1,9,no"
             )
             
         # סינון קווים שמגיעים לתל אביב
@@ -97,7 +97,7 @@ def handle_ivr_request(
                 
         if not ta_arrivals:
             return PlainTextResponse(
-                "read=t-לא נמצאו קווים ישירים לתל אביב בתחנה זו. לחזרה לתפריט הקש 9.=selection,no,1,1,9,no"
+                "read=t-לא נמצאו קווים ישירים לתל אביב בתחנה זו. לחזרה לתפריט הקש 9.=select,no,1,1,9,no"
             )
             
         # בניית תפריט קווים זמינים (עד 3)
@@ -146,7 +146,7 @@ def handle_ivr_request(
                 
                 # השמעת התוצאה למשתמש
                 return PlainTextResponse(
-                    f"read=t-קו {selected_line} מתחנה {search_stop} {eta_text}.{eta_time} לנסיעה חדשה הקש 9.=selection,no,1,1,9,no"
+                    f"read=t-קו {selected_line} מתחנה {search_stop} {eta_text}.{eta_time} לנסיעה חדשה הקש 9.=select,no,1,1,9,no"
                 )
         except Exception:
             return PlainTextResponse("routing=./")
@@ -178,9 +178,9 @@ def handle_ivr_request(
     my_arrivals = sorted(my_arrivals, key=lambda x: x.get('MinutesToArrival', 999))
 
     # א. תרחיש שנבחר קו ספציפי (1, 2 או 3)
-    if selection in {"1", "2", "3"}:
+    if select in {"1", "2", "3"}:
         try:
-            idx = int(selection) - 1
+            idx = int(select) - 1
             if idx < len(my_arrivals):
                 selected = my_arrivals[idx]
                 line = str(selected.get('Shilut', ''))
@@ -199,23 +199,23 @@ def handle_ivr_request(
                 # שמירת המסלול בטלפון של המשתמש + השמעת הפרטים + המתנה למקש 8 או 9
                 return PlainTextResponse(
                     f"api_set_phone_var_saved_route={line}&"
-                    f"read=t-{msg}=selection,no,1,1,89,no"
+                    f"read=t-{msg}=select,no,1,1,89,no"
                 )
         except Exception:
             return PlainTextResponse("routing=./")
 
     # ב. תרחיש של שמיעת הוראות הליכה ברגל (מקש 8)
-    if selection == "8":
+    if select == "8":
         # כאן אנחנו צריכים לדעת איזה קו נשמר כדי להקריא את הוראות ההליכה הנכונות
         line_to_use = saved_route if saved_route in APPROVED_LINES else "74"
         _, walk_instructions = get_walking_instructions(line_to_use)
         
         return PlainTextResponse(
-            f"read=t-{walk_instructions} לחזרה לתפריט הראשי הקש 9.=selection,no,1,1,9,no"
+            f"read=t-{walk_instructions} לחזרה לתפריט הראשי הקש 9.=select,no,1,1,9,no"
         )
 
     # ג. תרחיש של מסלול שמור (הוקש 0)
-    if selection == "0" and saved_route:
+    if select == "0" and saved_route:
         # מחפשים מתי מגיע הקו השמור שלו
         saved_arrival = None
         for item in my_arrivals:
@@ -232,10 +232,10 @@ def handle_ivr_request(
                 f"המסלול השמור שלך הוא קו {saved_route}. האוטובוס מגיע בעוד {eta} דקות, "
                 f"בשעה {eta_time}. לרשימת המסלולים המלאה הקש 9."
             )
-            return PlainTextResponse(f"read=t-{msg}=selection,no,1,1,9,no")
+            return PlainTextResponse(f"read=t-{msg}=select,no,1,1,9,no")
         else:
             msg = f"הקו השמור שלך הוא קו {saved_route}, אך לא נמצאה נסיעה קרובה שלו. לרשימת המסלולים המלאה הקש 9."
-            return PlainTextResponse(f"read=t-{msg}=selection,no,1,1,9,no")
+            return PlainTextResponse(f"read=t-{msg}=select,no,1,1,9,no")
 
     # ד. תפריט ראשי (כניסה ראשונית או חזרה עם מקש 9)
     menu_parts = []
@@ -252,15 +252,15 @@ def handle_ivr_request(
         num_str = num_word[i] if i < len(num_word) else str(i + 1)
         menu_parts.append(f"למסלול {num_str} עם קו {shilut} מגיע בעוד {eta} דקות, הקש {i + 1}.")
         
-    menu_parts.append("להזנת מזהה תחנה אחרת הקש כוכבית.")
+    menu_parts.append("להזנת מזהה תחנה אחרת הקש 4.") # שונה מכוכבית למקש 4
     
     menu_text = " ".join(menu_parts)
     
     # בניית המקשים המותרים להקשה
-    allowed_keys = ["1", "2", "3", "*"]
+    allowed_keys = ["1", "2", "3", "4"] # שונה מ-* למקש 4
     if saved_route:
         allowed_keys.append("0")
     legal_digits = "".join(allowed_keys)
     
-    response_text = f"read=t-שלום. {menu_text}=selection,no,1,1,{legal_digits},no"
+    response_text = f"read=t-שלום. {menu_text}=select,no,1,1,{legal_digits},no"
     return PlainTextResponse(response_text)
