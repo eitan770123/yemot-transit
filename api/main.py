@@ -39,9 +39,10 @@ def save_saved_routes(routes):
 saved_routes = load_saved_routes()
 active_sessions = {}
 
-def make_ivr_response(text: str, var_name: str = "", min_digits: int = 1, max_digits: int = 1, sec_wait: int = 7) -> str:
-    """ייצור תגובת IVR המבוססת על טקסט נקי בלבד"""
-    return clean_text(text)
+def make_ivr_response(text: str, var_name: str = "select", min_digits: int = 1, max_digits: int = 1, sec_wait: int = 7) -> str:
+    """ייצור תגובת IVR עם פקודת read ישירה"""
+    cleaned_text = clean_text(text)
+    return f"read=t-{cleaned_text}={var_name},yes,{max_digits},{min_digits},{sec_wait},No,no,no"
 
 def get_israel_time() -> datetime.datetime:
     """קבלת הזמן הנוכחי לפי שעון ישראל"""
@@ -134,17 +135,17 @@ def handle_ivr_request(
     # 1. חזרה לתפריט הראשי או כניסה ראשונית ללא בחירה
     if not select or select == "9":
         session.clear()
-        return PlainTextResponse(get_main_menu_response(caller_phone, saved_route))
+        return PlainTextResponse(make_ivr_response(get_main_menu_response(caller_phone, saved_route), "select", 1, 1))
         
     # 2. תפריט שמור - הקשת 0
     if select == "0" and saved_route:
         try:
             data = israel_bus_cli.get_lines_by_stop("33440")
         except Exception:
-            return PlainTextResponse(clean_text("שגיאה בקבלת נתונים ממשרד התחבורה לחזרה לתפריט הקש 9"))
+            return PlainTextResponse(make_ivr_response("שגיאה בקבלת נתונים ממשרד התחבורה לחזרה לתפריט הקש 9", "select", 1, 1))
             
         if not data:
-            return PlainTextResponse(clean_text("לא נמצאו קווים פעילים בתחנה זו כעת לחזרה לתפריט הקש 9"))
+            return PlainTextResponse(make_ivr_response("לא נמצאו קווים פעילים בתחנה זו כעת לחזרה לתפריט הקש 9", "select", 1, 1))
             
         saved_arrival = None
         for item in data:
@@ -161,15 +162,15 @@ def handle_ivr_request(
                 f"המסלול השמור שלך הוא קו {saved_route}. האוטובוס מגיע בעוד {eta} דקות, "
                 f"בשעה {eta_time}. לרשימת המסלולים המלאה הקש 9."
             )
-            return PlainTextResponse(clean_text(msg))
+            return PlainTextResponse(make_ivr_response(msg, "select", 1, 1))
         else:
             msg = f"הקו השמור שלך הוא קו {saved_route}, אך לא נמצאה נסיעה קרובה שלו. לרשימת המסלולים המלאה הקש 9."
-            return PlainTextResponse(clean_text(msg))
+            return PlainTextResponse(make_ivr_response(msg, "select", 1, 1))
             
     # 3. מעבר למסלול מותאם אישית - הקשת 4
     if select == "4":
         session.clear()
-        return PlainTextResponse(clean_text("נא הקש את מזהה התחנה בן חמש הספרות"))
+        return PlainTextResponse(make_ivr_response("נא הקש את מזהה התחנה בן חמש הספרות", "select", 5, 5, 10))
         
     # 4. הזנת תחנה מותאמת אישית (5 ספרות)
     if len(select) == 5 and select.isdigit():
@@ -177,10 +178,10 @@ def handle_ivr_request(
         try:
             data = israel_bus_cli.get_lines_by_stop(custom_stop)
         except Exception:
-            return PlainTextResponse(clean_text("אירעה שגיאה בחיפוש התחנה אנא נסה שוב לחזרה לתפריט הקש 9"))
+            return PlainTextResponse(make_ivr_response("אירעה שגיאה בחיפוש התחנה אנא נסה שוב לחזרה לתפריט הקש 9", "select", 1, 1))
             
         if not data:
-            return PlainTextResponse(clean_text("לא נמצאו קווים פעילים בתחנה זו לחזרה לתפריט הקש 9"))
+            return PlainTextResponse(make_ivr_response("לא נמצאו קווים פעילים בתחנה זו לחזרה לתפריט הקש 9", "select", 1, 1))
             
         # סינון קווים שמגיעים לתל אביב
         ta_arrivals = []
@@ -191,7 +192,7 @@ def handle_ivr_request(
                 ta_arrivals.append(item)
                 
         if not ta_arrivals:
-            return PlainTextResponse(clean_text("לא נמצאו קווים ישירים לתל אביב בתחנה זו לחזרה לתפריט הקש 9"))
+            return PlainTextResponse(make_ivr_response("לא נמצאו קווים ישירים לתל אביב בתחנה זו לחזרה לתפריט הקש 9", "select", 1, 1))
             
         # בניית תפריט קווים זמינים (עד 3)
         menu_parts = []
@@ -212,13 +213,13 @@ def handle_ivr_request(
         session["search_lines"] = lines_list
         
         raw_msg = f"בתחנה זו. {menu_text} לחזרה לתפריט הראשי הקש 9."
-        return PlainTextResponse(clean_text(raw_msg))
+        return PlainTextResponse(make_ivr_response(raw_msg, "select", 1, 1))
         
     # 5. השמעת הוראות הליכה - הקשת 8
     if select == "8":
         line_to_use = session.get("selected_route") or saved_route or "74"
         _, walk_instructions = get_walking_instructions(line_to_use)
-        return PlainTextResponse(clean_text(f"{walk_instructions} לחזרה לתפריט הראשי הקש 9"))
+        return PlainTextResponse(make_ivr_response(f"{walk_instructions} לחזרה לתפריט הראשי הקש 9", "select", 1, 1))
         
     # 6. בחירות קווים (מקשים 1, 2, 3)
     if select in {"1", "2", "3"}:
@@ -243,21 +244,21 @@ def handle_ivr_request(
                     eta_time = f" שעת הגעה לתחנה משוערת היא {get_eta_time_string(eta)}." if eta is not None else ""
                     
                     raw_msg = f"קו {selected_line} מתחנה {search_stop} {eta_text} {eta_time} לנסיעה חדשה הקש 9"
-                    return PlainTextResponse(clean_text(raw_msg))
+                    return PlainTextResponse(make_ivr_response(raw_msg, "select", 1, 1))
             except Exception:
                 pass
             session.clear()
-            return PlainTextResponse(get_main_menu_response(caller_phone, saved_route))
+            return PlainTextResponse(make_ivr_response(get_main_menu_response(caller_phone, saved_route), "select", 1, 1))
             
         # ב. אם אנו בתפריט הראשי (בית דגן)
         else:
             try:
                 data = israel_bus_cli.get_lines_by_stop("33440")
             except Exception:
-                return PlainTextResponse(clean_text("שגיאה בקבלת נתונים ממשרד התחבורה לחזרה לתפריט הקש 9"))
+                return PlainTextResponse(make_ivr_response("שגיאה בקבלת נתונים ממשרד התחבורה לחזרה לתפריט הקש 9", "select", 1, 1))
                 
             if not data:
-                return PlainTextResponse(clean_text("לא נמצאו קווים פעילים בתחנה זו כעת לחזרה לתפריט הקש 9"))
+                return PlainTextResponse(make_ivr_response("לא נמצאו קווים פעילים בתחנה זו כעת לחזרה לתפריט הקש 9", "select", 1, 1))
                 
             my_arrivals = []
             for item in data:
@@ -290,12 +291,12 @@ def handle_ivr_request(
                         f"לשמיעת הוראות הליכה מפורטות אל שדרות רוטשילד פינת נחלת בנימין הקש 8. "
                         f"לחזרה לתפריט הקש 9."
                     )
-                    return PlainTextResponse(clean_text(msg))
+                    return PlainTextResponse(make_ivr_response(msg, "select", 1, 1))
             except Exception:
                 pass
             session.clear()
-            return PlainTextResponse(get_main_menu_response(caller_phone, saved_route))
+            return PlainTextResponse(make_ivr_response(get_main_menu_response(caller_phone, saved_route), "select", 1, 1))
             
     # כל מקרה אחר - חזרה לתפריט ראשי
     session.clear()
-    return PlainTextResponse(get_main_menu_response(caller_phone, saved_route))
+    return PlainTextResponse(make_ivr_response(get_main_menu_response(caller_phone, saved_route), "select", 1, 1))
