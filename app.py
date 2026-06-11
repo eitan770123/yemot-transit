@@ -85,7 +85,7 @@ def speak_text_external(text: str, phone: str) -> str:
             
         res_json = response.json()
         if res_json.get("responseStatus") == "OK":
-            return f"f-/2/speech_{phone}.wav"
+            return f"f-2/speech_{phone}.wav"
     except Exception as e:
         print(f"Error handling external TTS: {e}")
         if os.path.exists(local_filename):
