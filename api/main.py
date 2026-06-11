@@ -134,13 +134,19 @@ def get_main_menu_response(phone: str, saved_route: str, session: dict) -> str:
 @app.get("/")
 @app.get("/transit-route")
 def handle_ivr_request(
-    select: str = Query(None),
+    select: list[str] = Query(None),
     ApiPhone: str = Query(None),
     phone: str = Query(None)
 ):
     caller_phone = ApiPhone or phone or "default"
+    
+    select_val = None
     if select:
-        select = select.strip()
+        if isinstance(select, list):
+            select_val = select[-1].strip()
+        else:
+            select_val = str(select).strip()
+    select = select_val
         
     session = active_sessions.setdefault(caller_phone, {})
     saved_route = saved_routes.get(caller_phone)

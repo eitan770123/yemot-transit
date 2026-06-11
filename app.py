@@ -172,11 +172,9 @@ def get_main_menu_response(phone: str, saved_route: str, session: dict) -> str:
 def handle_ivr_request():
     # קבלת מזהה טלפון ומקש שהוקש
     phone = request.args.get("ApiPhone") or request.args.get("phone") or "default"
-    select = request.args.get("select")
+    selects = request.args.getlist("select")
+    select = selects[-1].strip() if selects else None
     
-    if select:
-        select = select.strip()
-        
     session = active_sessions.setdefault(phone, {})
     saved_route = saved_routes.get(phone)
     
