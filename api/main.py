@@ -14,9 +14,10 @@ def clean_text(text: str) -> str:
     """ניקוי תווים לא חוקיים של ימות המשיח כדי למנוע קריסה של השרת הטלפוני"""
     if not text:
         return ""
-    # הסרה מוחלטת של: נקודה, מקף, גרש, גרשיים, אמפרסנד, פסיק, קו אנכי, נקודתיים ונקודה-פסיק
-    # כולל סימני כיווניות של יוניקוד (LTR/RTL) שעלולים להשתרבב בטקסט
-    text = re.sub(r'[.\-\"\'\&|,:;\u200e\u200f]', " ", text)
+    # החלפת פסיקים בנקודות כדי ליצור הפסקות דיבור קלות ב-TTS המובנה
+    text = text.replace(",", ".")
+    # הסרת תווים שעלולים לשבש את הפקודות של ימות המשיח (משאירים נקודות)
+    text = re.sub(r'[\-\"\'\&|:;\u200e\u200f]', " ", text)
     # צמצום רווחים כפולים
     text = re.sub(r'\s+', " ", text)
     return text.strip()
@@ -44,71 +45,8 @@ def save_saved_routes(routes):
 saved_routes = load_saved_routes()
 active_sessions = {}
 
-def generate_tts_file(text: str, filename: str):
-    import threading
-    def _run():
-        asyncio.run(edge_tts.Communicate(text, "he-IL-AvriNeural").save(filename))
-    thread = threading.Thread(target=_run)
-    thread.start()
-    thread.join()
-
 def speak_text_external(text: str, phone: str) -> str:
-    token = os.getenv("YEMOT_TOKEN")
-    if not token:
-        return f"t-{text}"
-        
-    import shutil
-    has_ffmpeg = shutil.which("ffmpeg") is not None
-    local_mp3 = f"temp_{phone}.mp3"
-    local_wav = f"temp_{phone}.wav"
-    yemot_path = f"ivr2:/2/speech_{phone}.wav"
-    url = "https://www.call2all.co.il/ym/api/UploadFile"
-    
-    try:
-        generate_tts_file(text, local_mp3)
-        
-        if has_ffmpeg:
-            try:
-                import subprocess
-                cmd = ["ffmpeg", "-y", "-i", local_mp3, "-ac", "1", "-ar", "8000", "-c:a", "pcm_s16le", local_wav]
-                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-                upload_file = local_wav
-                convert_audio = "0"
-            except Exception as e:
-                print(f"ffmpeg conversion failed, falling back to MP3: {e}")
-                upload_file = local_mp3
-                convert_audio = "1"
-        else:
-            upload_file = local_mp3
-            convert_audio = "1"
-            
-        data = {
-            "token": token,
-            "path": yemot_path,
-            "convertAudio": convert_audio
-        }
-        with open(upload_file, "rb") as f:
-            filename = f"speech_{phone}.wav" if convert_audio == "0" else f"speech_{phone}.mp3"
-            files = {"file": (filename, f)}
-            response = requests.post(url, data=data, files=files)
-            
-        if os.path.exists(local_mp3):
-            os.remove(local_mp3)
-        if os.path.exists(local_wav):
-            os.remove(local_wav)
-            
-        res_json = response.json()
-        if res_json.get("responseStatus") == "OK":
-            return f"f-speech_{phone}.wav"
-    except Exception as e:
-        print(f"Error handling external TTS: {e}")
-        if os.path.exists(local_mp3):
-            try: os.remove(local_mp3)
-            except Exception: pass
-        if os.path.exists(local_wav):
-            try: os.remove(local_wav)
-            except Exception: pass
-                
+    # שימוש ב-TTS המובנה של ימות המשיח עם תמיכה בהפסקות (נקודות)
     return f"t-{text}"
 def make_ivr_response(text: str, phone: str, var_name: str = "select", min_digits: int = 1, max_digits: int = 1, sec_wait: int = 7) -> str:
     """ייצור תגובת IVR עם פקודת read ישירה"""
