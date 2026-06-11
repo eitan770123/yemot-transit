@@ -9,6 +9,33 @@ import israel_bus_cli
 
 app = Flask(__name__)
 
+LOG_FILE = "requests.log"
+
+def log_request(phone: str, select: str, response_text: str):
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now().isoformat()} | Phone: {phone} | Select: {select} | Response: {response_text}\n")
+    except Exception:
+        pass
+
+@app.after_request
+def log_after_request(response):
+    try:
+        phone = request.args.get("ApiPhone") or request.args.get("phone") or "default"
+        select = request.args.get("select") or ""
+        resp_data = response.get_data(as_text=True)
+        log_request(phone, select, resp_data)
+    except Exception:
+        pass
+    return response
+
+@app.route("/view-logs", methods=["GET"])
+def view_logs():
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            return Response(f.read(), mimetype="text/plain")
+    return Response("No logs found", mimetype="text/plain")
+
 # קווים ישירים מצומת בית דגן המגיעים סמוך מאוד לשדרות רוטשילד / נחלת בנימין
 APPROVED_LINES = {"74", "174", "201", "274", "156"}
 
