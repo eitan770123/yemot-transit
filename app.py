@@ -107,7 +107,7 @@ def make_ivr_response(text: str, phone: str, var_name: str = "select", min_digit
     """ייצור תגובת IVR עם פקודת read ישירה"""
     cleaned_text = clean_text(text)
     tts_prefix_content = speak_text_external(cleaned_text, phone)
-    return f"read={tts_prefix_content}={var_name},no,{max_digits},{min_digits},{sec_wait},Digits,no"
+    return f"read={tts_prefix_content}={var_name},yes,{max_digits},{min_digits},{sec_wait},Digits,no"
 
 def get_israel_time() -> datetime.datetime:
     """קבלת הזמן הנוכחי לפי שעון ישראל"""
