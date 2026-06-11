@@ -45,19 +45,12 @@ saved_routes = load_saved_routes()
 active_sessions = {}
 
 def generate_tts_file(text: str, filename: str):
-    async def _generate():
-        communicate = edge_tts.Communicate(text, "he-IL-AvriNeural")
-        await communicate.save(filename)
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-        
-    if loop and loop.is_running():
-        future = asyncio.run_coroutine_threadsafe(_generate(), loop)
-        future.result()
-    else:
-        asyncio.run(_generate())
+    import threading
+    def _run():
+        asyncio.run(edge_tts.Communicate(text, "he-IL-AvriNeural").save(filename))
+    thread = threading.Thread(target=_run)
+    thread.start()
+    thread.join()
 
 def speak_text_external(text: str, phone: str) -> str:
     token = os.getenv("YEMOT_TOKEN")
@@ -139,7 +132,7 @@ def get_walking_instructions(line: str) -> tuple[str, str]:
         )
     return station, walk
 
-def get_main_menu_response(phone: str, saved_route: str) -> str:
+def get_main_menu_response(phone: str, saved_route: str, session: dict) -> str:
     try:
         data = israel_bus_cli.get_lines_by_stop("33440")
     except Exception:
@@ -158,6 +151,10 @@ def get_main_menu_response(phone: str, saved_route: str) -> str:
         return clean_text("סליחה לא נמצאו אוטובוסים קרובים לתל אביב כעת בתחנה לחזרה לתפריט הקש 9")
         
     my_arrivals = sorted(my_arrivals, key=lambda x: x.get('MinutesToArrival', 999))
+    
+    # שמירה ב-Session למניעת פניות כפולות
+    session["arrivals"] = my_arrivals
+    session["arrivals_time"] = datetime.datetime.now()
     
     menu_parts = []
     if saved_route:
@@ -191,24 +188,36 @@ def handle_ivr_request(
     # 1. חזרה לתפריט הראשי או כניסה ראשונית ללא בחירה
     if not select or select == "9":
         session.clear()
-        return PlainTextResponse(make_ivr_response(get_main_menu_response(caller_phone, saved_route), caller_phone, "select", 1, 1))
+        menu_msg = get_main_menu_response(caller_phone, saved_route, session)
+        return PlainTextResponse(make_ivr_response(menu_msg, caller_phone, "select", 1, 1))
         
     # 2. תפריט שמור - הקשת 0
     if select == "0" and saved_route:
-        try:
-            data = israel_bus_cli.get_lines_by_stop("33440")
-        except Exception:
-            return PlainTextResponse(make_ivr_response("שגיאה בקבלת נתונים ממשרד התחבורה לחזרה לתפריט הקש 9", caller_phone, "select", 1, 1))
-            
-        if not data:
-            return PlainTextResponse(make_ivr_response("לא נמצאו קווים פעילים בתחנה זו כעת לחזרה לתפריט הקש 9", caller_phone, "select", 1, 1))
-            
         saved_arrival = None
-        for item in data:
-            if str(item.get('Shilut', '')) == saved_route:
-                saved_arrival = item
-                break
+        arrivals = session.get("arrivals")
+        arrivals_time = session.get("arrivals_time")
+        
+        # שימוש בנתונים השמורים ב-Session אם קיימים וטריים (פחות מ-2 דקות)
+        if arrivals and arrivals_time and (datetime.datetime.now() - arrivals_time).total_seconds() < 120:
+            for item in arrivals:
+                if str(item.get('Shilut', '')) == saved_route:
+                    saved_arrival = item
+                    break
+                    
+        if not saved_arrival:
+            try:
+                data = israel_bus_cli.get_lines_by_stop("33440")
+            except Exception:
+                return PlainTextResponse(make_ivr_response("שגיאה בקבלת נתונים ממשרד התחבורה לחזרה לתפריט הקש 9", caller_phone, "select", 1, 1))
                 
+            if not data:
+                return PlainTextResponse(make_ivr_response("לא נמצאו קווים פעילים בתחנה זו כעת לחזרה לתפריט הקש 9", caller_phone, "select", 1, 1))
+                
+            for item in data:
+                if str(item.get('Shilut', '')) == saved_route:
+                    saved_arrival = item
+                    break
+                    
         if saved_arrival:
             eta = saved_arrival.get('MinutesToArrival', 0)
             eta_time = get_eta_time_string(eta)
@@ -267,6 +276,8 @@ def handle_ivr_request(
         # שמירה ב-Session
         session["search_stop"] = custom_stop
         session["search_lines"] = lines_list
+        session["search_arrivals"] = ta_arrivals[:3]
+        session["search_arrivals_time"] = datetime.datetime.now()
         
         raw_msg = f"בתחנה זו. {menu_text} לחזרה לתפריט הראשי הקש 9."
         return PlainTextResponse(make_ivr_response(raw_msg, caller_phone, "select", 1, 1))
@@ -289,12 +300,22 @@ def handle_ivr_request(
                 if 0 <= line_idx < len(search_lines):
                     selected_line = search_lines[line_idx]
                     
-                    data = israel_bus_cli.get_lines_by_stop(search_stop)
                     eta = None
-                    for item in data:
-                        if str(item.get('Shilut', '')) == selected_line:
-                            eta = item.get('MinutesToArrival', 0)
-                            break
+                    search_arrivals = session.get("search_arrivals")
+                    search_arrivals_time = session.get("search_arrivals_time")
+                    
+                    if search_arrivals and search_arrivals_time and (datetime.datetime.now() - search_arrivals_time).total_seconds() < 120:
+                        for item in search_arrivals:
+                            if str(item.get('Shilut', '')) == selected_line:
+                                eta = item.get('MinutesToArrival', 0)
+                                break
+                                
+                    if eta is None:
+                        data = israel_bus_cli.get_lines_by_stop(search_stop)
+                        for item in data:
+                            if str(item.get('Shilut', '')) == selected_line:
+                                eta = item.get('MinutesToArrival', 0)
+                                break
                             
                     eta_text = f"מגיע בעוד {eta} דקות" if eta is not None else "לא נמצאו זמנים קרובים כעת"
                     eta_time = f" שעת הגעה לתחנה משוערת היא {get_eta_time_string(eta)}." if eta is not None else ""
@@ -304,26 +325,32 @@ def handle_ivr_request(
             except Exception:
                 pass
             session.clear()
-            return PlainTextResponse(make_ivr_response(get_main_menu_response(caller_phone, saved_route), caller_phone, "select", 1, 1))
+            return PlainTextResponse(make_ivr_response(get_main_menu_response(caller_phone, saved_route, session), caller_phone, "select", 1, 1))
             
         # ב. אם אנו בתפריט הראשי (בית דגן)
         else:
-            try:
-                data = israel_bus_cli.get_lines_by_stop("33440")
-            except Exception:
-                return PlainTextResponse(make_ivr_response("שגיאה בקבלת נתונים ממשרד התחבורה לחזרה לתפריט הקש 9", caller_phone, "select", 1, 1))
-                
-            if not data:
-                return PlainTextResponse(make_ivr_response("לא נמצאו קווים פעילים בתחנה זו כעת לחזרה לתפריט הקש 9", caller_phone, "select", 1, 1))
-                
-            my_arrivals = []
-            for item in data:
-                shilut = str(item.get('Shilut', ''))
-                if shilut in APPROVED_LINES:
-                    my_arrivals.append(item)
-                    
-            my_arrivals = sorted(my_arrivals, key=lambda x: x.get('MinutesToArrival', 999))
+            my_arrivals = session.get("arrivals")
+            arrivals_time = session.get("arrivals_time")
             
+            if not my_arrivals or not arrivals_time or (datetime.datetime.now() - arrivals_time).total_seconds() > 120:
+                try:
+                    data = israel_bus_cli.get_lines_by_stop("33440")
+                except Exception:
+                    return PlainTextResponse(make_ivr_response("שגיאה בקבלת נתונים ממשרד התחבורה לחזרה לתפריט הקש 9", caller_phone, "select", 1, 1))
+                    
+                if not data:
+                    return PlainTextResponse(make_ivr_response("לא נמצאו קווים פעילים בתחנה זו כעת לחזרה לתפריט הקש 9", caller_phone, "select", 1, 1))
+                    
+                my_arrivals = []
+                for item in data:
+                    shilut = str(item.get('Shilut', ''))
+                    if shilut in APPROVED_LINES:
+                        my_arrivals.append(item)
+                        
+                my_arrivals = sorted(my_arrivals, key=lambda x: x.get('MinutesToArrival', 999))
+                session["arrivals"] = my_arrivals
+                session["arrivals_time"] = datetime.datetime.now()
+                
             try:
                 idx = int(select) - 1
                 if idx < len(my_arrivals):
@@ -351,8 +378,4 @@ def handle_ivr_request(
             except Exception:
                 pass
             session.clear()
-            return PlainTextResponse(make_ivr_response(get_main_menu_response(caller_phone, saved_route), caller_phone, "select", 1, 1))
-            
-    # כל מקרה אחר - חזרה לתפריט ראשי
-    session.clear()
-    return PlainTextResponse(make_ivr_response(get_main_menu_response(caller_phone, saved_route), caller_phone, "select", 1, 1))
+            return PlainTextResponse(make_ivr_response(get_main_menu_response(caller_phone, saved_route, session), caller_phone, "select", 1, 1))
