@@ -10,6 +10,36 @@ import re
 
 app = FastAPI()
 
+# קווים ישירים מצומת בית דגן המגיעים סמוך מאוד לשדרות רוטשילד / נחלת בנימין
+APPROVED_LINES = {"74", "174", "201", "274", "156"}
+
+# קווים כלליים לתל אביב לצורך סינון בחיפוש מתחנות אחרות
+COMMON_TA_LINES = {
+    "1", "2", "25", "74", "125", "129", "142", "156", "164", "172", "174", 
+    "189", "190", "193", "201", "274", "411", "461"
+}
+
+# מפות זמני נסיעה משוערים מצומת בית דגן לאלנבי/רוטשילד (בדקות)
+TRAVEL_TIMES = {
+    "74": 45,
+    "174": 45,
+    "201": 35,
+    "274": 55,
+    "156": 25
+}
+
+def get_travel_time_word(line: str) -> str:
+    mins = TRAVEL_TIMES.get(line, 40)
+    if mins == 25:
+        return "כעשרים וחמש דקות"
+    elif mins == 35:
+        return "כשלושים וחמש דקות"
+    elif mins == 45:
+        return "כארבעים וחמש דקות"
+    elif mins == 55:
+        return "כחמישים וחמש דקות"
+    return "כארבעים דקות"
+
 def clean_text(text: str) -> str:
     """ניקוי תווים לא חוקיים של ימות המשיח כדי למנוע קריסה של השרת הטלפוני"""
     if not text:
@@ -110,7 +140,8 @@ def get_main_menu_response(phone: str, saved_route: str, session: dict) -> str:
     if not my_arrivals:
         return clean_text("סליחה לא נמצאו אוטובוסים קרובים לתל אביב כעת בתחנה לחזרה לתפריט הקש 9")
         
-    my_arrivals = sorted(my_arrivals, key=lambda x: x.get('MinutesToArrival', 999))
+    # מיון לפי זמן הגעה כולל ליעד (זמן הגעה לתחנה + זמן נסיעה)
+    my_arrivals = sorted(my_arrivals, key=lambda x: x.get('MinutesToArrival', 999) + TRAVEL_TIMES.get(str(x.get('Shilut', '')), 40))
     
     # שמירה ב-Session למניעת פניות כפולות
     session["arrivals"] = my_arrivals
@@ -225,6 +256,9 @@ def handle_ivr_request(
         if not ta_arrivals:
             return PlainTextResponse(make_ivr_response("לא נמצאו קווים ישירים לתל אביב בתחנה זו לחזרה לתפריט הקש 9", caller_phone, "select", 1, 1))
             
+        # מיון קווים לפי זמן הגעה לתחנה
+        ta_arrivals = sorted(ta_arrivals, key=lambda x: x.get('MinutesToArrival', 999))
+        
         # בניית תפריט קווים זמינים (עד 3)
         menu_parts = []
         lines_list = []
@@ -313,7 +347,8 @@ def handle_ivr_request(
                     if shilut in APPROVED_LINES:
                         my_arrivals.append(item)
                         
-                my_arrivals = sorted(my_arrivals, key=lambda x: x.get('MinutesToArrival', 999))
+                # מיון לפי זמן הגעה כולל ליעד (זמן הגעה לתחנה + זמן נסיעה)
+                my_arrivals = sorted(my_arrivals, key=lambda x: x.get('MinutesToArrival', 999) + TRAVEL_TIMES.get(str(x.get('Shilut', '')), 40))
                 session["arrivals"] = my_arrivals
                 session["arrivals_time"] = datetime.datetime.now()
                 
@@ -334,9 +369,11 @@ def handle_ivr_request(
                     # שמירה זמנית ב-Session
                     session["selected_route"] = line
                     
+                    travel_time_word = get_travel_time_word(line)
+                    
                     msg = (
                         f"בחרת בקו {line}. האוטובוס הבא מגיע לתחנה בעוד {eta} דקות, בשעה {eta_time}. "
-                        f"עליך לרדת בתחנת {drop_station}. זמן הנסיעה באוטובוס הוא כעשרים וחמש דקות. "
+                        f"עליך לרדת בתחנת {drop_station}. זמן הנסיעה באוטובוס הוא {travel_time_word}. "
                         f"לשמיעת הוראות הליכה מפורטות אל שדרות רוטשילד פינת נחלת בנימין הקש 8. "
                         f"לחזרה לתפריט הקש 9."
                     )
