@@ -57,34 +57,57 @@ def speak_text_external(text: str, phone: str) -> str:
     if not token:
         return f"t-{text}"
         
-    local_filename = f"temp_{phone}.mp3"
+    import shutil
+    has_ffmpeg = shutil.which("ffmpeg") is not None
+    local_mp3 = f"temp_{phone}.mp3"
+    local_wav = f"temp_{phone}.wav"
     yemot_path = f"ivr2:/2/speech_{phone}.wav"
     url = "https://www.call2all.co.il/ym/api/UploadFile"
     
     try:
-        generate_tts_file(text, local_filename)
+        generate_tts_file(text, local_mp3)
+        
+        if has_ffmpeg:
+            try:
+                import subprocess
+                cmd = ["ffmpeg", "-y", "-i", local_mp3, "-ac", "1", "-ar", "8000", "-c:a", "pcm_s16le", local_wav]
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                upload_file = local_wav
+                convert_audio = "0"
+            except Exception as e:
+                print(f"ffmpeg conversion failed, falling back to MP3: {e}")
+                upload_file = local_mp3
+                convert_audio = "1"
+        else:
+            upload_file = local_mp3
+            convert_audio = "1"
+            
         data = {
             "token": token,
             "path": yemot_path,
-            "convertAudio": "1"
+            "convertAudio": convert_audio
         }
-        with open(local_filename, "rb") as f:
-            files = {"file": (f"speech_{phone}.mp3", f)}
+        with open(upload_file, "rb") as f:
+            filename = f"speech_{phone}.wav" if convert_audio == "0" else f"speech_{phone}.mp3"
+            files = {"file": (filename, f)}
             response = requests.post(url, data=data, files=files)
             
-        if os.path.exists(local_filename):
-            os.remove(local_filename)
+        if os.path.exists(local_mp3):
+            os.remove(local_mp3)
+        if os.path.exists(local_wav):
+            os.remove(local_wav)
             
         res_json = response.json()
         if res_json.get("responseStatus") == "OK":
-            return f"f-speech_{phone}.wav"
+            return f"f-2/speech_{phone}.wav"
     except Exception as e:
         print(f"Error handling external TTS: {e}")
-        if os.path.exists(local_filename):
-            try:
-                os.remove(local_filename)
-            except Exception:
-                pass
+        if os.path.exists(local_mp3):
+            try: os.remove(local_mp3)
+            except Exception: pass
+        if os.path.exists(local_wav):
+            try: os.remove(local_wav)
+            except Exception: pass
                 
     return f"t-{text}"
 def make_ivr_response(text: str, phone: str, var_name: str = "select", min_digits: int = 1, max_digits: int = 1, sec_wait: int = 7) -> str:
